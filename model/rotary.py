@@ -8,46 +8,33 @@ def rotate_half(x):
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
+# model/rotary.py 수정 제안 (_apply_rotary_pos_emb_torchscript 함수만)
 
 # @torch.jit.script # 일단 제거
 def _apply_rotary_pos_emb_torchscript(q, k, cos, sin):
     """Applies Rotary Positional Embedding to the query and key tensors."""
     # q, k shape: [Batch, SeqLen, Heads, HeadDim]
-    # cos, sin shape: [Batch, SeqLen, 1, 1, HeadDim] 또는 [1, SeqLen, 1, 1, HeadDim]
+    # cos, sin shape: [1, SeqLen, 1, 1, HeadDim] (Rotary 클래스에서 생성된 형태)
     
-    # cos, sin 텐서의 마지막 차원이 q, k와 같은지 확인 및 조정
+    # --- 여기가 수정된 부분 ---
+    # cos, sin의 불필요한 중간 차원(dim 2, 3)을 제거하고 q, k와 브로드캐스팅 가능하도록 함
+    # 최종 목표 shape: [1, SeqLen, 1, HeadDim] 또는 [SeqLen, HeadDim]
+    if cos.ndim == 5:
+        cos = cos.squeeze(3).squeeze(2) # shape: [1, SeqLen, HeadDim]
+        sin = sin.squeeze(3).squeeze(2) # shape: [1, SeqLen, HeadDim]
+    # --- 수정 끝 ---
+
+    # cos, sin 텐서의 마지막 차원이 q, k와 같은지 확인
     if cos.shape[-1] != q.shape[-1]:
-        if cos.shape[-1] * 2 == q.shape[-1]: # HeadDim/2 로 생성된 경우
-             # print("Adjusting cos/sin shape for RoPE.")
+        # (이전의 HeadDim/2 처리 로직은 남겨둘 수 있음 - 만약을 위해)
+        if cos.shape[-1] * 2 == q.shape[-1]: 
              cos = torch.cat((cos, cos), dim=-1)
              sin = torch.cat((sin, sin), dim=-1)
         else:
-             raise ValueError(f"q/k와 cos/sin의 마지막 차원 크기가 맞지 않습니다. q: {q.shape}, cos: {cos.shape}")
-             
-    # 불필요한 차원 제거 (q/k 와 shape 맞추기 위해)
-    # cos, sin shape: [1, SeqLen, 1, HeadDim]
-    if cos.ndim == 5 and cos.shape[2] == 1 and cos.shape[3] == 1:
-         cos = cos.squeeze(2).squeeze(2) # shape: [1, SeqLen, HeadDim]
-         sin = sin.squeeze(2).squeeze(2) # shape: [1, SeqLen, HeadDim]
-    elif cos.ndim == 4 and cos.shape[2] == 1: # 예: [Batch, SeqLen, 1, HeadDim] 형태일 경우 대비
-         cos = cos.squeeze(2)
-         sin = sin.squeeze(2)
-    elif cos.ndim != 3 or cos.shape[0] != 1 or cos.shape[1] != q.shape[1] or cos.shape[2] != q.shape[-1]:
-        # 예상과 다른 shape일 경우 에러 발생시켜 확인 유도
-        # print(f"Debug: q.shape={q.shape}, cos.shape={cos.shape}, sin.shape={sin.shape}")
-        # raise ValueError("cos/sin 텐서 shape이 예상과 다릅니다. [1, SeqLen, HeadDim] 형태여야 합니다.")
-        # 또는 브로드캐스팅 가능한 형태로 reshape 시도
-        try:
-             cos = cos.view(1, q.shape[1], -1)[..., :q.shape[-1]]
-             sin = sin.view(1, q.shape[1], -1)[..., :q.shape[-1]]
-        except Exception as e:
-             raise ValueError(f"cos/sin shape 조정 실패: {e}. q:{q.shape}, cos:{cos.shape}")
-
+             raise ValueError(f"RoPE 적용 전 q/k와 cos/sin의 마지막 차원 크기가 맞지 않습니다. q: {q.shape}, cos: {cos.shape}")
 
     # q, k에 Rotary Embedding 적용
-    # (q * cos) shape: [Batch, SeqLen, Heads, HeadDim]
-    # rotate_half(q) shape: [Batch, SeqLen, Heads, HeadDim]
-    # (rotate_half(q) * sin) shape: [Batch, SeqLen, Heads, HeadDim]
+    # q: [B, S, H, D], cos: [1, S, 1, D] -> 브로드캐스팅 가능
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     
