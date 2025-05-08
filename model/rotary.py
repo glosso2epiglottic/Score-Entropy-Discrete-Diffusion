@@ -17,16 +17,18 @@ def _apply_rotary_pos_emb_torchscript(q, k, cos, sin):
     # cos, sin shape: [1, SeqLen, 1, 1, HeadDim] (Rotary 클래스에서 생성된 형태)
     
     # --- 여기가 수정된 부분 ---
-    # cos, sin의 불필요한 중간 차원(dim 2, 3)을 제거하고 q, k와 브로드캐스팅 가능하도록 함
-    # 최종 목표 shape: [1, SeqLen, 1, HeadDim] 또는 [SeqLen, HeadDim]
-    if cos.ndim == 5:
+    # cos, sin의 불필요한 중간 차원(dim 2, 3)을 제거하여 브로드캐스팅 준비
+    if cos.ndim == 5 and cos.shape[2:4] == (1, 1):
         cos = cos.squeeze(3).squeeze(2) # shape: [1, SeqLen, HeadDim]
         sin = sin.squeeze(3).squeeze(2) # shape: [1, SeqLen, HeadDim]
+    elif cos.ndim == 4 and cos.shape[2] == 1: # 예: [Batch, SeqLen, 1, HeadDim] 형태일 경우
+         cos = cos.squeeze(2)
+         sin = sin.squeeze(2)
+    # 필요한 경우 추가적인 shape 검사 및 조정 로직
     # --- 수정 끝 ---
 
     # cos, sin 텐서의 마지막 차원이 q, k와 같은지 확인
     if cos.shape[-1] != q.shape[-1]:
-        # (이전의 HeadDim/2 처리 로직은 남겨둘 수 있음 - 만약을 위해)
         if cos.shape[-1] * 2 == q.shape[-1]: 
              cos = torch.cat((cos, cos), dim=-1)
              sin = torch.cat((sin, sin), dim=-1)
@@ -34,8 +36,8 @@ def _apply_rotary_pos_emb_torchscript(q, k, cos, sin):
              raise ValueError(f"RoPE 적용 전 q/k와 cos/sin의 마지막 차원 크기가 맞지 않습니다. q: {q.shape}, cos: {cos.shape}")
 
     # q, k에 Rotary Embedding 적용
-    # q: [B, S, H, D], cos: [1, S, 1, D] -> 브로드캐스팅 가능
-    q_embed = (q * cos) + (rotate_half(q) * sin)
+    # q: [B, S, H, D], cos: [1, S, D] -> 브로드캐스팅 시 cos가 [1, S, 1, D]로 확장되어 계산됨
+    q_embed = (q * cos) + (rotate_half(q) * sin) 
     k_embed = (k * cos) + (rotate_half(k) * sin)
     
     return q_embed, k_embed
